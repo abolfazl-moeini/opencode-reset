@@ -1,100 +1,79 @@
 # OpenCode Reset & Token Sync Manager
 
-یک ابزار ساده، سریع و مطمئن در قالب Bash Script برای مدیریت، تغییر و همگام‌سازی توکن‌ها و ریست کامل سرویس **OpenCode** بر روی macOS.
+A robust, lightweight CLI tool to seamlessly change API tokens, sync SQLite credentials, and restart the OpenCode background daemon on macOS.
 
 ---
 
-## 🔍 ریشه مشکل قبلی چه بود؟
+## ⚡ TL;DR (English)
 
-وقتی در OpenCode توکن را تغییر می‌دهید، به سه دلیل اصلی با ریست عادی کار نمی‌کرد:
+### Why changing tokens fails in OpenCode:
+1. **SQLite Database (v2.x)**: OpenCode stores active credentials in `~/.local/share/opencode/opencode.db` (`credential` table). Editing `auth.json` or `.env` alone is ignored because OpenCode no longer polls them once migrated.
+2. **Persistent Daemon (`opencode serve --service`)**: A long-running background service locks `opencode.db` and caches credentials in RAM. Changes won't take effect until the service is cleanly terminated and restarted.
 
-1. **معماری دیتابیس در نسخه جدید OpenCode (نسخه 2.x)**:
-   - اوپن‌کد از ماه آگوست ۲۰۲۶ توکن‌ها را به دیتابیس SQLite در مسیر `~/.local/share/opencode/opencode.db` (جدول `credential`) منتقل کرده است.
-   - تغییر فایل `auth.json` یا `.env` به تنهایی اثری ندارد چون اوپن‌کد فایل `auth.json` را دیگر به طور خودکار بازخوانی نمی‌کند.
-   - فرمت ذخیره در دیتابیس باید دقیقاً `{"type":"key","key":"..."}` باشد (در صورت نوشتن `"type":"api"`، ارور `SchemaError / 500` رخ می‌دهد).
-
-2. **سرویس پس‌زمینه (Daemon Process)**:
-   - اوپن‌کد یک پروسه سرور دائمی (`opencode serve --service`) دارد که تمام تنظیمات و کلیدها را در حافظه (RAM) نگه می‌دارد و کانکشن فعال به دیتابیس SQLite دارد.
-   - تا زمانی که سرویس پس‌زمینه به طور کامل متوقف نشود:
-     - دیتابیس SQLite قفل (`busy/locked`) می‌ماند.
-     - کلید جدید در رم لود نمی‌شود و درخواست‌ها با همان توکن قدیمی ارسال می‌شوند.
-
-3. **چرا پلاگین `opencode-failover` باگ داشت؟**:
-   - این پلاگین با monkeypatch کردن تابع گلوبال `fetch` کلیدها را می‌چرخاند، اما موتور داخلی اوپن‌کد قبل از پلاگین با همان کلید قبلی retry می‌کرد.
-   - هنگام ذخیره در SQLite، چون سرویس باز بود با خطای قفل دیتابیس روبرو می‌شد و ارور را با `catch {}` پنهان می‌کرد.
-   - ریست کردن با دستورات TUI فقط متغیرهای داخل حافظه همان سشن را ریست می‌کرد و دیتابیس یا سرویس اصلی را رفرش نمی‌کرد.
-
----
-
-## 🚀 نحوه استفاده از اسکریپت `opencode-reset.sh`
-
-این اسکریپت به صورت سراسری در سیستم شما با دستور `opencode-reset` در دسترس است.
-
-### ۱. اجرای ساده و تعاملی (Interactive)
-اگر توکن را در کلیپ‌بورد دارید یا می‌خواهید سریع چک کنید:
+### Quick Start:
 ```bash
+# Set new OpenCode token directly and reset everything
+opencode-reset oc_sk_your_new_token_here
+
+# Interactive mode (inspect active token, paste new one or press Enter to reset)
 opencode-reset
+
+# Sync edits made in auth.json / .env to SQLite and restart
+opencode-reset --restart
+
+# Check service and database credential status
+opencode-reset --status
+
+# Update another provider (e.g. OpenRouter, BAI)
+opencode-reset "sk-or-v1-..." openrouter
 ```
-اسکریپت توکن فعال فعلی را نشان می‌دهد و از شما می‌پرسد:
-- اگر توکن جدید را Paste کنید و Enter بزنید، توکن جدید جایگزین شده و سرویس ریست می‌شود.
-- اگر فقط Enter بزنید، توکن فعلی حفظ شده و تمام سرویس‌ها و دیتابیس ریست/همگام می‌شوند.
+
+### What it does:
+- Terminates running `opencode serve --service` processes cleanly (releasing DB locks).
+- Atomically updates `opencode.db` (`credential` table) with proper `{"type": "key", "key": "..."}` format.
+- Checkpoints SQLite WAL (`PRAGMA wal_checkpoint(TRUNCATE)`).
+- Syncs `~/.local/share/opencode/auth.json` and `~/.config/opencode/.env`.
+- Cleans stale quarantine/failover caches and orphaned plugins.
+- Starts the background service and verifies status via `opencode auth export`.
 
 ---
 
-### ۲. تغییر مستقیم توکن با آرگومان
-اگر توکن جدید را دارید، فقط کافیست آن را بعد از دستور وارد کنید:
+## 🇮🇷 راهنمای فارسی
+
+### 🔍 ریشه مشکل چه بود؟
+1. **دیتابیس SQLite در اوپن‌کد ۲**: اوپن‌کد توکن‌های فعال را در جدول `credential` دیتابیس `opencode.db` نگه می‌دارد. تغییر دستی `auth.json` یا `.env` دیگر به تنهایی خوانده نمی‌شود.
+2. **سرویس پس‌زمینه (`opencode serve --service`)**: سرویس پس‌زمینه فعال، دیتابیس را قفل نگه داشته و توکن قبلی را در رم کش می‌کند؛ تا سرویس کامپلیت ریست نشود، توکن جدید اعمال نخواهد شد.
+
+---
+
+### 🚀 دستورات کاربردی
+
+#### ۱. تغییر مستقیم توکن:
 ```bash
 opencode-reset oc_sk_your_new_token_here
 ```
 
----
+#### ۲. حالت تعاملی (Interactive):
+```bash
+opencode-reset
+```
+توکن فعلی را نمایش می‌دهد؛ در صورت وارد کردن توکن جدید جایگزین می‌شود و در صورت زدن **Enter**، توکن فعلی حفظ شده و سرویس ریست و همگام می‌گردد.
 
-### ۳. بعد از تغییر دستی توکن در `auth.json` یا `.env`
-اگر خودتان دستی فایلی را ویرایش کرده‌اید و فقط می‌خواهید اوپن‌کد آن را بفهمد و ریست شود:
+#### ۳. بعد از ادیت دستی `auth.json` یا `.env`:
 ```bash
 opencode-reset --restart
 ```
-اسکریپت خودکار فایل `auth.json` را با جدول `credential` دیتابیس SQLite و `.env` تطبیق داده، WAL دیتابیس را commit می‌کند و سرویس را دوباره راه می‌اندازد.
+تغییرات فایل‌های کانفیگ را با دیتابیس سینک کرده و سرویس را ری‌استارت می‌کند.
 
----
-
-### ۴. مشاهده وضعیت سرویس و تمام توکن‌های ذخیره شده
+#### ۴. بررسی وضعیت توکن‌ها و سرویس:
 ```bash
 opencode-reset --status
 ```
-نمونه خروجی:
-```text
-=====================================================
-       OpenCode Token & Service Reset Manager        
-=====================================================
-▶ OpenCode Binary: /Users/moeini/.opencode/bin/opencode
-▶ Service Status: RUNNING (http://127.0.0.1:49374)
-
-Stored Credentials in Database:
-  [ACTIVE]   opencode     | OpenCode Console   | oc_sk_xx...1234
-  [inactive] opencode     | OpenCode Console 2 | oc_sk_yy...5678
-  [ACTIVE]   openrouter   | API key            | sk-or-v1...abcd
-  [ACTIVE]   bai          | API key            | sk-xxxxx...efgh
-  ...
-```
 
 ---
 
-### ۵. تغییر توکن برای سایر سرویس‌ها (OpenRouter، BAI و...)
-اگر برای ارائه‌دهنده دیگری توکن جدید دارید:
+### 📦 نصب سراسری
+اسکریپت به صورت خودکار به `~/.local/bin/opencode-reset` لینک شده است. در صورت نیاز به لینک مجدد:
 ```bash
-opencode-reset "sk-or-v1-..." openrouter
+./opencode-reset.sh --install
 ```
-
----
-
-## 🛠 اسکریپت در پشت صحنه چه کارهایی انجام می‌دهد؟
-
-1. **Stop Cleanly**: سرویس پس‌زمینه اوپن‌کد را متوقف می‌کند و در صورت گیر کردن پروسه، با timeout دقیق آن را می‌بندد تا دیتابیس آزاد شود.
-2. **Atomic DB Update**: جدول `credential` در `opencode.db` را آپدیت کرده، رکورد کلید جدید را `active = 1` و سایر کلیدهای آن ارائه‌دهنده را غیرفعال می‌کند.
-3. **WAL Checkpoint**: دستور `PRAGMA wal_checkpoint(TRUNCATE)` را اجرا می‌کند تا تغییرات دیتابیس بلافاصله به دیسک نوشته شوند.
-4. **Auth & Env Sync**: فایل‌های `~/.local/share/opencode/auth.json` و `~/.config/opencode/.env` را با توکن جدید همگام می‌کند.
-5. **Cache & State Cleanup**: فایل‌های خراب احتمالی ناشی از failover قبلی (مثل `failover-state.json` و رفرنس‌های ناقص `tui.tsx`) را پاکسازی می‌کند.
-6. **Start Service**: سرویس اوپن‌کد را از نو استارت زده (`opencode service start`) و سلامت آن را با پورت لوکال بررسی می‌کند.
-7. **Reload Config**: دستور `opencode reload` را صدا می‌زند تا همه‌چیز در رم آماده به کار باشد.
-8. **Verification**: خروجی `opencode auth export` را تایید می‌کند تا مطمئن شود اوپن‌کد بدون ارور ۵۰۰ کلید را شناخته است.
